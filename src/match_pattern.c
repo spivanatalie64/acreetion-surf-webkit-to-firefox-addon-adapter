@@ -4,110 +4,183 @@
 #include <regex.h>
 #include "acrefxadapter.h"
 
-/* Convert Firefox match pattern to regex
- * Pattern format: <scheme>://<host><path> where scheme/host/path can have wildcards
- * * matches zero or more characters, ** not supported in simple form
- * <all_urls> matches all http, https, ftp, file URLs */
-static gchar *pattern_to_regex(const gchar *pattern) {
+typedef struct {
+    gchar *scheme;
+    gchar *host;
+    gchar *path;
+} ParsedPattern;
+
+static void free_parsed_pattern(ParsedPattern *p) {
+    if (!p) return;
+    g_free(p->scheme);
+    g_free(p->host);
+    g_free(p->path);
+    g_free(p);
+}
+
+static ParsedPattern *parse_match_pattern(const gchar *pattern) {
     if (!pattern) return NULL;
     
     if (g_strcmp0(pattern, "<all_urls>") == 0) {
-        return g_strdup("^(https?|ftp|file)://.*$");
+        ParsedPattern *p = g_new0(ParsedPattern, 1);
+        p->scheme = g_strdup("*");
+        p->host = g_strdup("*");
+        p->path = g_strdup("/*");
+        return p;
     }
     
-    GString *regex = g_string_new("^");
+    /* Find :// */
+    gchar *scheme_end = strstr(pattern, "://");
+    if (!scheme_end) return NULL;
     
-    const gchar *p = pattern;
-    while (*p) {
-        if (*p == '*') {
-            /* * matches zero or more characters except maybe / in some cases, 
-             * but Firefox is more complex. Use non-greedy-like simple match */
-            g_string_append(regex, ".*");
-        } else if (*p == '.') {
-            g_string_append(regex, "\\.");
-        } else if (*p == '?') {
-            g_string_append(regex, ".");
-        } else if (*p == '/' || *p == ':' || *p == '-' || *p == '_' || 
-                   (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || 
-                   (*p >= '0' && *p <= '9')) {
-            g_string_append_c(regex, *p);
-        } else {
-            g_string_append_printf(regex, "\\%c", *p);
+    ParsedPattern *p = g_new0(ParsedPattern, 1);
+    p->scheme = g_strndup(pattern, scheme_end - pattern);
+    
+    const gchar *rest = scheme_end + 3;
+    /* Find first / to separate host and path */
+    gchar *path_start = strchr(rest, '/');
+    if (!path_start) {
+        /* Firefox requires a path, even if just / */
+        free_parsed_pattern(p);
+        return NULL;
+    }
+    
+    p->host = g_strndup(rest, path_start - rest);
+    p->path = g_strdup(path_start);
+    
+    return p;
+}
+
+static gboolean match_scheme(const gchar *pattern_scheme, const gchar *url) {
+    if (!pattern_scheme || !url) return FALSE;
+    
+    if (g_strcmp0(pattern_scheme, "*") == 0) {
+        /* * matches only http and https */
+        return g_str_has_prefix(url, "http://") || g_str_has_prefix(url, "https://");
+    }
+    
+    gchar *scheme_end = strstr(url, "://");
+    if (!scheme_end) return FALSE;
+    
+    gsize url_scheme_len = scheme_end - url;
+    if (url_scheme_len != strlen(pattern_scheme)) return FALSE;
+    
+    return strncmp(url, pattern_scheme, url_scheme_len) == 0;
+}
+
+static gboolean match_host(const gchar *pattern_host, const gchar *url) {
+    if (!pattern_host || !url) return FALSE;
+    
+    gchar *scheme_end = strstr(url, "://");
+    if (!scheme_end) return FALSE;
+    const gchar *host_start = scheme_end + 3;
+    
+    gchar *path_start = strchr(host_start, '/');
+    gsize host_len = path_start ? (path_start - host_start) : strlen(host_start);
+    
+    gchar *url_host = g_strndup(host_start, host_len);
+    
+    gboolean result = FALSE;
+    
+    if (g_strcmp0(pattern_host, "*") == 0) {
+        result = TRUE;
+    } else if (g_str_has_prefix(pattern_host, "*.")) {
+        /* Match subdomains */
+        const gchar *pattern_domain = pattern_host + 2;
+        if (g_strcmp0(url_host, pattern_domain) == 0) {
+            /* *.example.com does NOT match example.com itself */
+            result = FALSE;
+        } else if (g_str_has_suffix(url_host, pattern_domain)) {
+            /* Check it's a subdomain (preceded by .) */
+            gsize suffix_len = strlen(pattern_domain);
+            if (host_len > suffix_len && url_host[host_len - suffix_len - 1] == '.') {
+                result = TRUE;
+            }
         }
-        p++;
+    } else {
+        /* Exact match */
+        result = (g_strcmp0(url_host, pattern_host) == 0);
     }
-    g_string_append(regex, "$");
     
-    gchar *result = regex->str;
-    g_string_free(regex, FALSE);
+    g_free(url_host);
     return result;
+}
+
+static gboolean match_path(const gchar *pattern_path, const gchar *url) {
+    if (!pattern_path || !url) return FALSE;
+    
+    gchar *scheme_end = strstr(url, "://");
+    if (!scheme_end) return FALSE;
+    const gchar *path_start = strchr(scheme_end + 3, '/');
+    if (!path_start) return FALSE;
+    
+    /* Firefox path matching: * matches any string, but not across / in some implementations
+     * Actually * matches zero or more characters */
+    const gchar *p = pattern_path;
+    const gchar *u = path_start;
+    
+    while (*p && *u) {
+        if (*p == '*') {
+            p++;
+            if (*p == '\0') {
+                /* * at end matches rest */
+                return TRUE;
+            }
+            /* Find next char after * in pattern */
+            gchar next = *p;
+            /* Skip through url until we find next char or end */
+            while (*u && *u != next) {
+                u++;
+            }
+            if (*u == '\0') return (*p == '\0');
+            continue;
+        }
+        if (*p == *u) {
+            p++;
+            u++;
+        } else {
+            return FALSE;
+        }
+    }
+    
+    /* Handle remaining wildcards */
+    while (*p == '*') p++;
+    
+    return (*p == '\0' && *u == '\0');
 }
 
 gboolean acrefx_match_pattern_matches(const gchar *pattern, const gchar *url) {
     if (!pattern || !url) return FALSE;
     
-    if (g_strcmp0(pattern, "<all_urls>") == 0) {
-        /* Firefox allows <all_urls> for http, https, ws, wss, file, ftp */
-        if (g_str_has_prefix(url, "http://") || g_str_has_prefix(url, "https://") ||
-            g_str_has_prefix(url, "file://") || g_str_has_prefix(url, "ftp://")) {
-            return TRUE;
-        }
-        return FALSE;
-    }
+    ParsedPattern *p = parse_match_pattern(pattern);
+    if (!p) return FALSE;
     
-    gchar *regex_str = pattern_to_regex(pattern);
-    if (!regex_str) return FALSE;
+    gboolean result = match_scheme(p->scheme, url) && 
+                      match_host(p->host, url) && 
+                      match_path(p->path, url);
     
-    regex_t re;
-    int ret = regcomp(&re, regex_str, REG_EXTENDED | REG_NOSUB | REG_ICASE);
-    g_free(regex_str);
-    
-    if (ret != 0) {
-        return FALSE;
-    }
-    
-    ret = regexec(&re, url, 0, NULL, 0);
-    regfree(&re);
-    
-    return (ret == 0);
+    free_parsed_pattern(p);
+    return result;
 }
 
 gboolean acrefx_should_inject_script(JsonObject *cs_obj, const gchar *url) {
     if (!cs_obj || !url) return FALSE;
     
-    /* If matches is not specified, Firefox doesn't inject */
     if (!json_object_has_member(cs_obj, "matches")) {
         return FALSE;
     }
     
-    /* Check exclude_matches first - if it matches exclude, don't inject */
+    /* Check exclude_matches first */
     if (json_object_has_member(cs_obj, "exclude_matches")) {
         JsonArray *exclude = json_object_get_array_member(cs_obj, "exclude_matches");
         if (exclude) {
             for (guint i = 0; i < json_array_get_length(exclude); i++) {
-                const gchar *pattern = json_array_get_string_element(exclude, i);
-                if (pattern && acrefx_match_pattern_matches(pattern, url)) {
-                    return FALSE;
-                }
-            }
-        }
-    }
-    
-    /* Check include_globs if present */
-    if (json_object_has_member(cs_obj, "include_globs")) {
-        JsonArray *globs = json_object_get_array_member(cs_obj, "include_globs");
-        if (globs && json_array_get_length(globs) > 0) {
-            gboolean matched_glob = FALSE;
-            for (guint i = 0; i < json_array_get_length(globs); i++) {
-                const gchar *glob = json_array_get_string_element(globs, i);
-                /* Simple glob match - for basic cases */
-                if (glob) {
-                    gchar *regex_glob = g_strdup(glob);
-                    /* Very basic conversion */
-                    for (gchar *c = regex_glob; *c; c++) {
-                        if (*c == '*') *c = 'X'; /* placeholder */
+                JsonNode *node = json_array_get_element(exclude, i);
+                if (JSON_NODE_HOLDS_VALUE(node)) {
+                    const gchar *pattern = json_array_get_string_element(exclude, i);
+                    if (pattern && acrefx_match_pattern_matches(pattern, url)) {
+                        return FALSE;
                     }
-                    /* Fall through to matches check for now */
                 }
             }
         }
@@ -118,9 +191,12 @@ gboolean acrefx_should_inject_script(JsonObject *cs_obj, const gchar *url) {
     if (!matches) return FALSE;
     
     for (guint i = 0; i < json_array_get_length(matches); i++) {
-        const gchar *pattern = json_array_get_string_element(matches, i);
-        if (pattern && acrefx_match_pattern_matches(pattern, url)) {
-            return TRUE;
+        JsonNode *node = json_array_get_element(matches, i);
+        if (JSON_NODE_HOLDS_VALUE(node)) {
+            const gchar *pattern = json_array_get_string_element(matches, i);
+            if (pattern && acrefx_match_pattern_matches(pattern, url)) {
+                return TRUE;
+            }
         }
     }
     
