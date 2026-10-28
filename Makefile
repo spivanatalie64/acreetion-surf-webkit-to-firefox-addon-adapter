@@ -30,3 +30,4 @@ clean:
 	rm -rf $(BUILDDIR)
 
 .PHONY: all install clean
+SRCS := $(wildcard $(SRCDIR)/*.c)

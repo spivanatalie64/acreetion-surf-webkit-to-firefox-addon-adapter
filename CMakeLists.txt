@@ -23,3 +23,13 @@ target_include_directories(acrefxadapter PUBLIC include)
 
 install(TARGETS acrefxadapter LIBRARY DESTINATION lib)
 install(DIRECTORY include/ DESTINATION include/acrefxadapter)
+add_library(acrefxadapter SHARED
+    src/adapter.c
+    src/manifest.c
+    src/match_pattern.c
+    src/message_bus.c
+    src/content_bridge.c
+    src/background_bridge.c
+    src/api_bridge.c
+    src/storage_bridge.c
+)
