@@ -10,6 +10,7 @@ struct _AcreFxAddon {
     gboolean enabled;
     GHashTable *scripts; /* content scripts */
     gpointer background_handle;
+    gboolean background_loaded;
 };
 
 struct _AcreFxAdapter {
@@ -17,9 +18,11 @@ struct _AcreFxAdapter {
     GHashTable *addons; /* addon_id -> AcreFxAddon */
     GPtrArray *loaded_paths;
     gpointer message_bus;
+    gchar *config_dir;
 };
 
 AcreFxManifest *acrefx_manifest_parse(const gchar *manifest_path);
 void acrefx_manifest_free(AcreFxManifest *manifest);
+gboolean acrefx_manifest_is_compatible(AcreFxManifest *manifest);
 
 #endif /* ADAPTER_INTERNAL_H */

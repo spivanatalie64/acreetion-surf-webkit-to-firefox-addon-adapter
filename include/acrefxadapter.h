@@ -16,15 +16,36 @@ typedef struct _AcreFxAddon AcreFxAddon;
 /* Manifest structure */
 typedef struct {
     gchar *manifest_version;
+    gint manifest_version_int;
+    gboolean is_manifest_v3;
+    
     gchar *name;
     gchar *version;
     gchar *description;
+    
     GPtrArray *permissions;
     GPtrArray *host_permissions;
+    GPtrArray *optional_permissions;
     GPtrArray *content_scripts;
+    
+    /* Background */
     gchar *background_script;
+    gchar *background_page;
+    gchar *background_service_worker;
+    gchar *background_type; /* "scripts", "page", "service_worker" */
+    
+    /* Action/Browser Action */
     gchar *browser_action_default_popup;
+    gchar *page_action_default_popup;
+    gchar *action_default_popup;
+    gchar *default_icon;
+    
     gchar *options_page;
+    gchar *options_ui_page;
+    gchar *devtools_page;
+    
+    /* MV3 specific */
+    GPtrArray *web_accessible_resources; /* can be complex in MV3 */
 } AcreFxManifest;
 
 /* Adapter main object */
