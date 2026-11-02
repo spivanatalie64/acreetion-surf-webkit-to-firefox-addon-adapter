@@ -79,3 +79,9 @@ void acrefx_adapter_init_webextension_api(WebKitWebView *webview, AcreFxAddon *a
 #endif
 
 #endif /* ACREFXADAPTER_H */
+
+/* Helper functions for surf.c integration */
+gboolean acrefx_adapter_init_for_surf(WebKitWebContext *context, const gchar *config_dir);
+void acrefx_adapter_cleanup(void);
+gboolean acrefx_adapter_load_addons_from_dir(const gchar *addons_dir);
+void acrefx_adapter_process_page_load(WebKitWebView *webview);

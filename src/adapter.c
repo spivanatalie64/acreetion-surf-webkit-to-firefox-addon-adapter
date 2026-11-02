@@ -121,3 +121,49 @@ void acrefx_adapter_broadcast_message(AcreFxAdapter *adapter, const gchar *messa
 void acrefx_adapter_init_webextension_api(WebKitWebView *webview, AcreFxAddon *addon) {
     (void)webview; (void)addon;
 }
+
+/* Global adapter instance for surf integration */
+static AcreFxAdapter *g_surf_adapter = NULL;
+
+gboolean acrefx_adapter_init_for_surf(WebKitWebContext *context, const gchar *config_dir) {
+    if (g_surf_adapter) {
+        acrefx_adapter_free(g_surf_adapter);
+    }
+    g_surf_adapter = acrefx_adapter_new(context);
+    if (g_surf_adapter) {
+        g_surf_adapter->config_dir = g_strdup(config_dir);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+void acrefx_adapter_cleanup(void) {
+    if (g_surf_adapter) {
+        acrefx_adapter_free(g_surf_adapter);
+        g_surf_adapter = NULL;
+    }
+}
+
+gboolean acrefx_adapter_load_addons_from_dir(const gchar *addons_dir) {
+    if (!g_surf_adapter || !addons_dir) return FALSE;
+    
+    GDir *dir = g_dir_open(addons_dir, 0, NULL);
+    if (!dir) return FALSE;
+    
+    const gchar *name;
+    while ((name = g_dir_read_name(dir))) {
+        if (g_strcmp0(name, ".") == 0 || g_strcmp0(name, "..") == 0) continue;
+        gchar *addon_path = g_build_filename(addons_dir, name, NULL);
+        if (g_file_test(addon_path, G_FILE_TEST_IS_DIR)) {
+            acrefx_adapter_load_addon(g_surf_adapter, addon_path);
+        }
+        g_free(addon_path);
+    }
+    g_dir_close(dir);
+    return TRUE;
+}
+
+void acrefx_adapter_process_page_load(WebKitWebView *webview) {
+    if (!g_surf_adapter || !webview) return;
+    acrefx_adapter_inject_content_scripts(g_surf_adapter, webview);
+}
