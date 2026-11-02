@@ -1,0 +1,157 @@
+name: Build Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-tarball:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libjson-glib-dev pkg-config build-essential
+      - name: Build
+        run: make
+      - name: Create release tarball
+        run: |
+          mkdir -p dist
+          make install DESTDIR=$(pwd)/dist PREFIX=/usr
+          cd dist && tar czf ../acreetion-surf-webkit-to-firefox-addon-adapter-${{ github.ref_name }}-linux-x86_64.tar.gz usr/
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: acreetion-surf-webkit-to-firefox-addon-adapter-*.tar.gz
+
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libjson-glib-dev pkg-config build-essential debhelper devscripts
+      - name: Build DEB
+        run: |
+          mkdir -p debian
+          cat > debian/control << 'DEB'
+Source: acreetion-surf-webkit-to-firefox-addon-adapter
+Section: libs
+Priority: optional
+Maintainer: Natalie Spiva <spivanatalie64@gmail.com>
+Build-Depends: debhelper-compat (= 13), libgtk-3-dev, libwebkit2gtk-4.1-dev, libjson-glib-dev, pkg-config
+
+Package: libacrefxadapter
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: WebKitGTK to Firefox WebExtension adapter
+ Adapter for running Firefox WebExtensions in acreetion-surf browser.
+DEB
+          cat > debian/rules << 'DEB'
+#!/usr/bin/make -f
+%:
+	dh $@
+override_dh_auto_build:
+	make
+override_dh_auto_install:
+	make install DESTDIR=$(CURDIR)/debian/libacrefxadapter PREFIX=/usr
+DEB
+          chmod +x debian/rules
+          echo "1.0" > debian/source/format
+          dpkg-buildpackage -us -uc
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: ../*.deb
+
+  build-rpm:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: dnf install -y gtk3-devel webkit2gtk4.1-devel json-glib-devel pkgconfig gcc make rpm-build
+      - name: Build RPM
+        run: |
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          tar czf ~/rpmbuild/SOURCES/acreetion-surf-webkit-to-firefox-addon-adapter-1.0.tar.gz --transform 's,^,acreetion-surf-webkit-to-firefox-addon-adapter-1.0/,' .
+          cat > ~/rpmbuild/SPECS/adapter.spec << 'RPM'
+Name:           acreetion-surf-webkit-to-firefox-addon-adapter
+Version:        1.0
+Release:        1%{?dist}
+Summary:        WebKitGTK to Firefox WebExtension adapter
+License:        MIT
+Source0:        %{name}-%{version}.tar.gz
+
+BuildRequires:  gtk3-devel webkit2gtk4.1-devel json-glib-devel pkgconfig gcc make
+
+%description
+Adapter for running Firefox WebExtensions in acreetion-surf browser.
+
+%prep
+%setup -q
+
+%build
+make
+
+%install
+make install DESTDIR=%{buildroot} PREFIX=/usr
+
+%files
+/usr/lib/libacrefxadapter.so
+/usr/include/acrefxadapter/*
+
+%changelog
+* Mon Nov 02 2026 Natalie Spiva <spivanatalie64@gmail.com> - 1.0-1
+- Initial release
+RPM
+          rpmbuild -ba ~/rpmbuild/SPECS/adapter.spec
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: ~/rpmbuild/RPMS/*/*.rpm
+
+  build-arch:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: pacman -Syu --noconfirm base-devel git gtk3 webkit2gtk-4.1 json-glib pkg-config
+      - name: Build Arch package
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+          cat > PKGBUILD << 'PKG'
+pkgname=acreetion-surf-webkit-to-firefox-addon-adapter
+pkgver=1.0
+pkgrel=1
+pkgdesc="WebKitGTK to Firefox WebExtension adapter"
+arch=('x86_64')
+url="https://github.com/spivanatalie64/acreetion-surf-webkit-to-firefox-addon-adapter"
+license=('MIT')
+depends=('gtk3' 'webkit2gtk-4.1' 'json-glib')
+makedepends=('base-devel' 'pkg-config')
+source=()
+sha256sums=()
+
+build() {
+  cd "$srcdir/../.."
+  make
+}
+
+package() {
+  cd "$srcdir/../.."
+  make install DESTDIR="$pkgdir" PREFIX=/usr
+}
+PKG
+          su builder -c "makepkg -si --noconfirm"
+          cp *.pkg.tar.zst /tmp/
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: /tmp/*.pkg.tar.zst
